@@ -3,7 +3,7 @@ title: webpack 打包过程
 date: 2019-07-17 23:56:56
 tags:
 ---
-本文参考`webpack`创始人 Tobias Koppers 的视频 [Webpack founder Tobias Koppers demos bundling live by hand](https://www.youtube.com/watch?v=UNMkLHzofQI), 以及开源项目[minipack](https://github.com/ronami/minipack)，梳理了`webpack`打包过程。
+本文参考`webpack`创始人 Tobias Koppers 的视频 [Webpack founder Tobias Koppers demos bundling live by hand](https://www.youtube.com/watch?v=UNMkLHzofQI)，学习了`webpack`打包过程。
 # 手动打包文件
 ## 文件目录
 我们准备一个极简单的项目来进行打包，目录结构和内容如下：
@@ -57,10 +57,10 @@ export default lazy
 /******/ });
 
 ```
-我们第一个目标是通过人工打包的方式生成这样一个立即执行函数，通过一定的串联逻辑，将所有的模块整合到一起。
+我们的目标是通过人工打包的方式生成这样一个立即执行函数，通过一定的串联逻辑，将所有的模块整合到一起。
 
 ## 模块划分
-可以看到项目模块之间有这样的引用关系，入口文件引入了`helloWorld`和`lazy`，`helloWorld`和`lazy`引入了`big`
+可以看到项目模块之间有这样的引用关系，入口文件引入了`helloWorld`和`lazy`，`helloWorld`和`lazy`分别又引入了`big`
 
 ```
 * src/index.js (ESM)
@@ -76,7 +76,7 @@ export default lazy
     # ./big
     -  src/big.js
  ```
- 打包之后将会有两个文件，一个主文件main.js，一个是动态引入的async.js。其中，main是async的父文件，main中有的模块，asycn可以不引入。main文件里面已经包含了`src/big.js`，这里进行优化，打包后的`async.js`不需要包含`src/big.js`
+ 打包之后将生成两个文件，一个主文件main.js，一个是动态引入的async.js。其中，main是async的父文件，main中有的模块，asycn可以不引入。main文件里面已经包含了`src/big.js`，这里进行优化，打包后的`async.js`不需要包含`src/big.js`
  如下图所示：
  ![](miniWebpack/5b4526ed.png)
 {% asset_img 5b4526ed.png %}
@@ -262,7 +262,8 @@ runtime.js
 ```
 这样，我们就完成了人工打包一个项目的简单流程。接下来看要怎么用代码来实现自动打包。
 # 自动打包
- 先不看详细的细节，我们主要的步骤就是:
+我们参考开源项目[minipack](https://github.com/ronami/minipack)，来看看要怎么实现一个简易的打包工具。
+先不看详细的细节，我们主要的步骤就是:
  ```js
 // 解析模块
 function createAsset(filename) {}
@@ -288,6 +289,221 @@ const {transformFromAst} = require('babel-core'); // 将 AST 转化成 ES5
 ```
  主要就是把文本文件转化成语法树，拿到`import`和`export`知道模块之间的依赖关系，再把语法树转换成ES5。
 
-可以了解一下语法树如下图所示，可以拿到每句代码对应的信息。
+可以了解一下语法树,如下图所示，可以拿到每句代码对应的信息。
 ![](miniWebpack/2019-07-28-01-23-40.png)
 {% asset_img 2019-07-28-01-23-40.png %}
+## 解析单个文件
+```js
+function createAsset(filename) {
+  // 读一个文件，得到一个文件内容的字符串
+  const content = fs.readFileSync(filename, 'utf-8');
+
+  // 我们通过 babylon 这个 javascript 解析器来理解 import 进来的字符串
+  const ast = babylon.parse(content, {
+    sourceType: 'module',
+  });
+
+  // 该模块所依赖的模块的相对路径放在这个 dependencies 数组
+  const dependencies = [];
+
+  // import声明
+  traverse(ast, {
+    // es6 的模块是静态的，不能导入一个变量或者有条件的导入另一个模块
+    ImportDeclaration: ({node}) => {
+      // 所依赖的模块的路径
+      dependencies.push(node.source.value);
+    },
+  });
+
+  // 递增设置模块ID
+  const id = ID++;
+
+// AST -> ES5
+  const {code} = transformFromAst(ast, null, {
+    presets: ['env'],
+  });
+  // 返回模块的信息
+  return {
+    id,
+    filename,
+    dependencies,
+    code,
+  };
+}
+```
+index文件解析后输出如下内容
+```js
+import helloWorld from './helloWorld'
+const node = document.createElement("div")
+node.innerHTML = helloWorld + 'loading...'
+document.body.appendChild(node)
+```
+```js
+{ id: 0,
+  filename: './src/index.js',
+  dependencies: [ './helloWorld.js' ],
+  code: '"use strict";\n\n
+    var _helloWorld = require("./helloWorld.js");\n\n
+    var _helloWorld2 = _interopRequireDefault(_helloWorld);\n\n
+    function  _interopRequireDefault(obj) { 
+        return obj && obj.__esModule ? obj : {
+        default: obj }; }\n\n
+    var node = document.createElement("div");\nn
+    ode.innerHTML = _helloWorld2.default + \'loading...\';\n\n
+    document.body.appendChild(node);' 
+}
+```
+## 生成依赖图
+```js
+// 我们需要知道单个模块的依赖，然后从入口文件开始，提取依赖图
+function createGraph(entry) {
+  // 从第一个文件开始,首先解析index文件
+  const mainAsset = createAsset(entry);
+
+  // 定义一个依赖队列，一开始的时候只有入口文件
+  const queue = [mainAsset];
+
+  // 遍历 queue，广度优先
+  for (const asset of queue) {
+    asset.mapping = {};
+
+    const dirname = path.dirname(asset.filename);
+
+    // 遍历依赖数组，解析每一个依赖模块
+    asset.dependencies.forEach(relativePath => {
+      const absolutePath = path.join(dirname, relativePath);
+
+      // 解析
+      const child = createAsset(absolutePath);
+
+      // 子模块`路径-id`map
+      asset.mapping[relativePath] = child.id;
+
+      // 每一个子模块加入依赖图队列，进行遍历
+      queue.push(child);
+    });
+  }
+```
+输出的依赖图长这样：
+```js
+[ { id: 0,
+    filename: './src/index.js',
+    dependencies: [ './helloWorld.js' ],
+    code:
+     '"use strict";\n\nvar _helloWorld = require("./helloWorld.js");\n\nvar _helloWorld2 = _interopRequireDefault(_helloWorld);\n\nfunction _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }\n\nvar node = document.createElement("div");\nnode.innerHTML = _helloWorld2.default + \'loading...\';\n// import(/* webpackChunkName: "async" */ \'./lazy\').then(({ default: lazy }) => {\n//   node.innerHTML = helloWorld + lazy\n// })\ndocument.body.appendChild(node);',
+    mapping: { './helloWorld.js': 1 }
+   },
+  { id: 1,
+    filename: 'src\\helloWorld.js',
+    dependencies: [ './big.js' ],
+    code:
+     '"use strict";\n\nObject.defineProperty(exports, "__esModule", {\n  value: true\n});\n\nvar _big = require("./big.js");\n\nvar _big2 = _interopRequireDefault(_big);\n\nfunction _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }\n\nvar helloWorld = (0, _big2.default)(\'hello world!\');\nexports.default = helloWorld;',
+    mapping: { './big.js': 2 } 
+  },
+  { id: 2,
+    filename: 'src\\big.js',
+    dependencies: [],
+    code:
+     '"use strict";\n\nObject.defineProperty(exports, "__esModule", {\n  value: true\n});\n\nexports.default = function (val) {\n  return val && val.toUpperCase();\n};',
+    mapping: {}
+  } ]
+```
+## 构造自执行函数和参数`modules`
+```js
+// 最终我们要生成一个自执行函数，参数是模块依赖图
+// (function() {})()
+
+function bundle(graph) {
+  let modules = '';
+  graph.forEach(mod => {
+    // 利用 createAsset 解析的时候，我们是把 import 转化成 commonJs 的 require
+
+    // 模块`id-路径`的map，因为我们转化之后的代码的require是使用相对路径.写一个map，拿到模块id的时候可以知道该模块对应的路径
+    // { './relative/path': 1 }.
+
+    modules += `${mod.id}: [
+      function (require, module, exports) {
+        ${mod.code}
+      },
+      ${JSON.stringify(mod.mapping)},
+    ],`;
+  });
+  const result = `
+    (function(modules) {
+      function require(id) {
+        const [fn, mapping] = modules[id];
+        function localRequire(name) {
+          return require(mapping[name]);
+        }
+        const module = { exports : {} };
+        fn(localRequire, module, module.exports);
+        return module.exports;
+      }
+      require(0);
+    })({${modules}})
+  `;
+
+  return result;
+}
+```
+生成的模块对象参数跟我们第一部分手动打包的模块对像是一样的：
+```js
+0: [
+      function (require, module, exports) {
+        "use strict";
+
+        var _helloWorld = require("./helloWorld.js");
+        
+        var _helloWorld2 = _interopRequireDefault(_helloWorld);
+        
+        function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+        
+        var node = document.createElement("div");
+        node.innerHTML = _helloWorld2.default + 'loading...';
+        // import(/* webpackChunkName: "async" */ './lazy').then(({ default:
+        lazy }) => {
+        //   node.innerHTML = helloWorld + lazy
+        // })
+        document.body.appendChild(node);
+              },
+     {"./helloWorld.js":1},
+    ],
+1: [
+      function (require, module, exports) {
+        "use strict";
+
+        Object.defineProperty(exports, "__esModule", {
+          value: true
+        });
+        
+        var _big = require("./big.js");
+        
+        var _big2 = _interopRequireDefault(_big);
+        
+        function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+        
+        var helloWorld = (0, _big2.default)('hello world!');
+        exports.default = helloWorld;
+              },
+     {"./big.js":2},
+    ],
+2: [
+      function (require, module, exports) {
+        "use strict";
+
+        Object.defineProperty(exports, "__esModule", {
+          value: true
+        });
+        
+        exports.default = function (val) {
+          return val && val.toUpperCase();
+        };
+              },
+        {},
+    ],
+```
+至此我们完成了一个简易的模块打包器。
+
+参考文献：
+[Webpack founder Tobias Koppers demos bundling live by hand](https://www.youtube.com/watch?v=UNMkLHzofQI)
+github 项目 [minipack](https://github.com/ronami/minipack)
