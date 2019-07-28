@@ -3,7 +3,7 @@ title: webpack 打包过程
 date: 2019-07-17 23:56:56
 tags:
 ---
-本文参考`webpack`创始人 Tobias Koppers 的视频 [Webpack founder Tobias Koppers demos bundling live by hand](https://www.youtube.com/watch?v=UNMkLHzofQI)，学习了`webpack`打包过程。
+本文参考`webpack`创始人 Tobias Koppers 的视频 [Webpack founder Tobias Koppers demos bundling live by hand](https://www.youtube.com/watch?v=UNMkLHzofQI),梳理`webpack`打包过程。
 # 手动打包文件
 ## 文件目录
 我们准备一个极简单的项目来进行打包，目录结构和内容如下：
